@@ -10,33 +10,36 @@ import time
 import os
 import yt_dlp
 import io
+from datetime import datetime
+import shutil
 
 EXAMPLE_URL = "https://www.youtube.com/watch?v=zTvJJnoWIPk"
 CACHED_DATA_PATH = "cached_data/"
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
 model, preprocess = openai_clip.load("ViT-B/32", device=device)
 
-def fetch_video(url):
-    try:
-        ydl_opts = {
-            'format': 'bestvideo[height<=360][ext=mp4][vcodec=avc1]/best[height<=360][ext=mp4]',
-            'quiet': True,
-            'no_warnings': True
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            duration = info.get('duration', 0)
-            # if duration >= 300:  # 5 minutes
-            #     st.error("Please find a YouTube video shorter than 5 minutes.")
-            #     st.stop()
-            video_url = info['url']
-            return None, video_url
-            
-    except Exception as e:
-        st.error(f"Error fetching video: {str(e)}")
-        st.error("Try another YouTube video or check if the URL is correct.")
-        st.stop()
+
+def fetch_video(source):
+    if source.startswith('http'):  # YouTube URL
+        try:
+            ydl_opts = {
+                'format': 'bestvideo[height<=360][ext=mp4][vcodec=avc1]/best[height<=360][ext=mp4]',
+                'quiet': True,
+                'no_warnings': True
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(source, download=False)
+                video_url = info['url']
+                return None, video_url
+                
+        except Exception as e:
+            st.error(f"Error fetching video: {str(e)}")
+            st.error("Try another YouTube video or check if the URL is correct.")
+            st.stop()
+    else:  # Local video file
+        return source, source
 
 def extract_frames(video, status_text, progress_bar):
     cap = cv2.VideoCapture(video)
@@ -212,21 +215,41 @@ footer {visibility: hidden;}
     border: 1px solid #E0E0E0;
     padding: 0.75rem;
     font-size: 1rem;
+    color: #333;
+}
+
+/* Style for the Video Source radio button */
+div[data-testid="stRadio"] > label {
+    color: rgb(250, 250, 250) !important;
 }
 .stRadio [role="radiogroup"] {
-    background: #F8F8F8;
+    background: rgb(14, 17, 23);
     padding: 1rem;
     border-radius: 12px;
 }
+
 h1 {text-align: center;}
 .css-gma2qf {display: flex; justify-content: center; font-size: 36px; font-weight: bold;}
 a:link {text-decoration: none;}
 a:hover {text-decoration: none;}
 .st-ba {font-family: Avenir;}
 .st-button {text-align: center;}
+
+/* Dark mode specific styles */
+@media (prefers-color-scheme: dark) {
+    .stTextInput input {
+        border-color: rgba(250, 250, 250, 0.2);
+    }
+    .stRadio [role="radiogroup"] {
+        border-color: rgba(250, 250, 250, 0.2);
+    }
+}
 </style>
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+
+if not os.path.exists("found_frames"):
+    os.makedirs("found_frames")
 
 if 'progress' not in st.session_state:
     st.session_state.progress = 1
@@ -250,25 +273,82 @@ if 'url' not in st.session_state:
 
 url = st.text_input("Enter a YouTube URL (e.g., https://www.youtube.com/watch?v=zTvJJnoWIPk)", key="url_input")
 
+source_type = st.radio("Video Source", ["YouTube URL", "Local File"])
+
+if source_type == "YouTube URL":
+    source = url
+else:
+    uploaded_file = st.file_uploader("Upload a video file", type=['mp4', 'avi', 'mov'])
+    if uploaded_file:
+        # Save the uploaded file temporarily
+        temp_path = f"temp_video_{int(time.time())}.mp4"
+        with open(temp_path, "wb") as f:
+            f.write(uploaded_file.getvalue())
+        source = temp_path
+    else:
+        source = None
+
+# if st.button("Process Video"):
+#     if not source:
+#         st.error("Please enter a YouTube URL or upload a video file first")
+#     else:
+#         try:
+#             cached_frames, cached_features, cached_fps, cached_frame_indices = load_cached_data(source)
+            
+#             if cached_frames is not None:
+#                 st.session_state.video_frames = cached_frames
+#                 st.session_state.video_features = cached_features
+#                 st.session_state.fps = cached_fps
+#                 st.session_state.frame_indices = cached_frame_indices
+#                 st.session_state.url = url
+#                 st.session_state.progress = 2
+#                 st.success("Loaded cached video data!")
+#             else:
+#                 with st.spinner('Fetching video...'):
+#                     video, video_url = fetch_video(source)
+#                     st.session_state.url = source
+                
+#                 progress_bar = st.progress(0)
+#                 status_text = st.empty()
+                
+#                 # Extract frames
+#                 st.session_state.video_frames, st.session_state.fps, st.session_state.frame_indices = extract_frames(video_url, status_text, progress_bar)
+                
+#                 # Encode frames
+#                 st.session_state.video_features = encode_frames(st.session_state.video_frames, status_text)
+                
+#                 save_cached_data(source, st.session_state.video_frames, st.session_state.video_features, st.session_state.fps, st.session_state.frame_indices)
+#                 status_text.text('Finalizing...')
+#                 st.session_state.progress = 2
+#                 progress_bar.progress(100)
+#                 status_text.empty()
+#                 progress_bar.empty()
+#                 st.success("Video processed successfully!")
+                
+#         except Exception as e:
+#             st.error(f"Error processing video: {str(e)}")
 if st.button("Process Video"):
-    if not url:
-        st.error("Please enter a YouTube URL first")
+    if not source:
+        st.error("Please provide a video source first")
     else:
         try:
-            cached_frames, cached_features, cached_fps, cached_frame_indices = load_cached_data(url)
+            st.session_state.source = source
+            if source_type == "YouTube URL" and not source.startswith('http'):
+                st.error("Please enter a valid YouTube URL")
+                st.stop()
+                
+            cached_frames, cached_features, cached_fps, cached_frame_indices = load_cached_data(source)
             
             if cached_frames is not None:
                 st.session_state.video_frames = cached_frames
                 st.session_state.video_features = cached_features
                 st.session_state.fps = cached_fps
                 st.session_state.frame_indices = cached_frame_indices
-                st.session_state.url = url
                 st.session_state.progress = 2
                 st.success("Loaded cached video data!")
             else:
                 with st.spinner('Fetching video...'):
-                    video, video_url = fetch_video(url)
-                    st.session_state.url = url
+                    video, video_url = fetch_video(source)
                 
                 progress_bar = st.progress(0)
                 status_text = st.empty()
@@ -279,7 +359,9 @@ if st.button("Process Video"):
                 # Encode frames
                 st.session_state.video_features = encode_frames(st.session_state.video_frames, status_text)
                 
-                save_cached_data(url, st.session_state.video_frames, st.session_state.video_features, st.session_state.fps, st.session_state.frame_indices)
+                if source_type == "YouTube URL":  # Only cache YouTube videos
+                    save_cached_data(source, st.session_state.video_frames, st.session_state.video_features, st.session_state.fps, st.session_state.frame_indices)
+                
                 status_text.text('Finalizing...')
                 st.session_state.progress = 2
                 progress_bar.progress(100)
@@ -287,8 +369,14 @@ if st.button("Process Video"):
                 progress_bar.empty()
                 st.success("Video processed successfully!")
                 
+                # Clean up temporary file if it exists
+                if source_type == "Local File" and os.path.exists(temp_path):
+                    os.remove(temp_path)
+                
         except Exception as e:
             st.error(f"Error processing video: {str(e)}")
+            if source_type == "Local File" and os.path.exists(temp_path):
+                os.remove(temp_path)
 
 if st.session_state.progress == 2:
     search_type = st.radio("Search Method", ["Text Search", "Image Search", "Text + Image Search"], index=0)
