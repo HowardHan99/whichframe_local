@@ -157,6 +157,19 @@ def get_youtube_timestamp_url(url, frame_idx, frame_indices, fps):
     
     return f"https://youtu.be/{video_id}?t={seconds_rounded}", seconds
 
+def format_timestamp(seconds):
+    """
+    Format seconds into HH:MM:SS format.
+    Args:
+        seconds: Number of seconds
+    Returns:
+        str: Formatted timestamp
+    """
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    seconds = seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
 def display_results(best_photo_idx, video_frames, video_name=None, frame_indices=None, fps=None):
     """
     Display and save search results.
@@ -167,7 +180,7 @@ def display_results(best_photo_idx, video_frames, video_name=None, frame_indices
         frame_indices: List of frame indices for timestamp calculation
         fps: Frames per second for timestamp calculation
     """
-    st.subheader("Top 10 Results")
+    st.subheader("Top 50 Results")
     
     # Determine the output directory
     if video_name:
@@ -189,13 +202,22 @@ def display_results(best_photo_idx, video_frames, video_name=None, frame_indices
         result = video_frames[frame_id]
         st.image(result, width=400)
         
+        # Calculate timestamp for the frame
+        if frame_indices is not None and fps is not None:
+            frame_count = frame_indices[frame_id]
+            seconds = frame_count / fps
+            timestamp = format_timestamp(int(seconds))
+        else:
+            timestamp = "unknown"
+        
         # Save the frame if it's from a local file
         if hasattr(st.session_state, 'source') and (
             (isinstance(st.session_state.source, str) and os.path.isfile(st.session_state.source)) or
             isinstance(st.session_state.source, list)
         ):
-            frame_path = os.path.join(output_dir, f"match_{idx:02d}.jpg")
+            frame_path = os.path.join(output_dir, f"match_{idx:02d}_{timestamp}.jpg")
             result.save(frame_path)
+            st.write(f"Time: {timestamp}")
         
         if video_name:
             st.write(f"From video: {video_name}")
@@ -206,14 +228,14 @@ def display_results(best_photo_idx, video_frames, video_name=None, frame_indices
             if timestamp_url:
                 st.markdown(f"[▶️ Play video at {format_timespan(int(seconds))}]({timestamp_url})")
 
-def text_search(search_query, video_features, video_frames, display_results_count=10, video_name=None, frame_indices=None, fps=None):
+def text_search(search_query, video_features, video_frames, display_results_count=50, video_name=None, frame_indices=None, fps=None):
     """
     Perform text-based semantic search on video frames.
     Args:
         search_query: Text query to search for
         video_features: Encoded features of video frames
         video_frames: List of video frames
-        display_results_count: Number of results to display
+        display_results_count: Number of results to display (default: 50)
         video_name: Name of the video (for multiple video mode)
         frame_indices: List of frame indices for timestamp calculation
         fps: Frames per second for timestamp calculation
@@ -233,14 +255,14 @@ def text_search(search_query, video_features, video_frames, display_results_coun
     values, best_photo_idx = similarities.topk(display_results_count, dim=0)
     display_results(best_photo_idx, video_frames, video_name, frame_indices, fps)
 
-def image_search(query_image, video_features, video_frames, display_results_count=10, video_name=None, frame_indices=None, fps=None):
+def image_search(query_image, video_features, video_frames, display_results_count=50, video_name=None, frame_indices=None, fps=None):
     """
     Perform image-based semantic search on video frames.
     Args:
         query_image: PIL Image to search for
         video_features: Encoded features of video frames
         video_frames: List of video frames
-        display_results_count: Number of results to display
+        display_results_count: Number of results to display (default: 50)
         video_name: Name of the video (for multiple video mode)
         frame_indices: List of frame indices for timestamp calculation
         fps: Frames per second for timestamp calculation
@@ -259,7 +281,7 @@ def image_search(query_image, video_features, video_frames, display_results_coun
     values, best_photo_idx = similarities.topk(display_results_count, dim=0)
     display_results(best_photo_idx, video_frames, video_name, frame_indices, fps)
 
-def text_and_image_search(search_query, query_image, video_features, video_frames, display_results_count=10, video_name=None, frame_indices=None, fps=None):
+def text_and_image_search(search_query, query_image, video_features, video_frames, display_results_count=50, video_name=None, frame_indices=None, fps=None):
     """
     Perform combined text and image semantic search on video frames.
     Args:
@@ -267,7 +289,7 @@ def text_and_image_search(search_query, query_image, video_features, video_frame
         query_image: PIL Image to search for
         video_features: Encoded features of video frames
         video_frames: List of video frames
-        display_results_count: Number of results to display
+        display_results_count: Number of results to display (default: 50)
         video_name: Name of the video (for multiple video mode)
         frame_indices: List of frame indices for timestamp calculation
         fps: Frames per second for timestamp calculation
