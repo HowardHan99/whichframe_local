@@ -170,7 +170,7 @@ def format_timestamp(seconds):
     seconds = seconds % 60
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
-def display_results(best_photo_idx, video_frames, video_name=None, frame_indices=None, fps=None):
+def display_results(best_photo_idx, video_frames, video_name=None, frame_indices=None, fps=None, similarities=None):
     """
     Display and save search results.
     Args:
@@ -179,8 +179,9 @@ def display_results(best_photo_idx, video_frames, video_name=None, frame_indices
         video_name: Name of the video (for multiple video mode)
         frame_indices: List of frame indices for timestamp calculation
         fps: Frames per second for timestamp calculation
+        similarities: Similarity scores for each frame
     """
-    st.subheader("Top 50 Results")
+    st.subheader("Top 50 Results (Filtered by 5-second intervals)")
     
     # Determine the output directory
     if video_name:
@@ -197,36 +198,70 @@ def display_results(best_photo_idx, video_frames, video_name=None, frame_indices
     else:
         os.makedirs(output_dir)
     
-    # Save and display each matching frame
+    # Initialize list to store results for CSV
+    results_data = []
+    used_timestamps = set()  # Keep track of used timestamp ranges
+    filtered_indices = []  # Store indices that pass the time filter
+    
+    # First pass: collect all valid frames
     for idx, frame_id in enumerate(best_photo_idx):
-        result = video_frames[frame_id]
-        st.image(result, width=400)
-        
         # Calculate timestamp for the frame
         if frame_indices is not None and fps is not None:
             frame_count = frame_indices[frame_id]
             seconds = frame_count / fps
             timestamp = format_timestamp(int(seconds))
-        else:
-            timestamp = "unknown"
+            
+            # Check if this timestamp is too close to any previously used timestamp
+            current_time = int(seconds)
+            is_too_close = any(abs(current_time - used_time) < 5 for used_time in used_timestamps)
+            
+            if not is_too_close:
+                used_timestamps.add(current_time)
+                filtered_indices.append((idx, frame_id, timestamp, seconds))
+    
+    # Second pass: display and save filtered frames
+    for filtered_idx, (idx, frame_id, timestamp, seconds) in enumerate(filtered_indices):
+        result = video_frames[frame_id]
+        st.image(result, width=400)
         
         # Save the frame if it's from a local file
         if hasattr(st.session_state, 'source') and (
             (isinstance(st.session_state.source, str) and os.path.isfile(st.session_state.source)) or
             isinstance(st.session_state.source, list)
         ):
-            frame_path = os.path.join(output_dir, f"match_{idx:02d}_{timestamp}.jpg")
+            frame_path = os.path.join(output_dir, f"match_{filtered_idx:02d}_{timestamp}.jpg")
             result.save(frame_path)
-            st.write(f"Time: {timestamp}")
+            
+            # Display time and similarity score
+            similarity_score = similarities[frame_id].item() if similarities is not None else None
+            st.write(f"Time: {timestamp} | Similarity Score: {similarity_score:.2f}")
+            
+            # Store result data for CSV
+            results_data.append({
+                'Match_Index': filtered_idx,
+                'Timestamp': timestamp,
+                'Seconds': seconds,
+                'Frame_Index': frame_id,
+                'Similarity_Score': similarity_score,
+                'Image_Filename': f"match_{filtered_idx:02d}_{timestamp}.jpg"
+            })
         
         if video_name:
             st.write(f"From video: {video_name}")
         
         # Only try to get timestamp for YouTube videos
         if hasattr(st.session_state, 'url'):
-            timestamp_url, seconds = get_youtube_timestamp_url(st.session_state.url, frame_id, frame_indices, fps)
+            timestamp_url, _ = get_youtube_timestamp_url(st.session_state.url, frame_id, frame_indices, fps)
             if timestamp_url:
-                st.markdown(f"[▶️ Play video at {format_timespan(int(seconds))}]({timestamp_url})")
+                st.markdown(f"[▶️ Play video at {timestamp}]({timestamp_url})")
+    
+    # Save results to CSV
+    if results_data:
+        csv_filename = os.path.join(output_dir, "search_results.csv")
+        import pandas as pd
+        df = pd.DataFrame(results_data)
+        df.to_csv(csv_filename, index=False)
+        st.success(f"Results saved to {csv_filename}")
 
 def text_search(search_query, video_features, video_frames, display_results_count=50, video_name=None, frame_indices=None, fps=None):
     """
@@ -253,7 +288,7 @@ def text_search(search_query, video_features, video_frames, display_results_coun
     video_features = video_features.float()
     similarities = (100.0 * video_features @ text_features.T)
     values, best_photo_idx = similarities.topk(display_results_count, dim=0)
-    display_results(best_photo_idx, video_frames, video_name, frame_indices, fps)
+    display_results(best_photo_idx, video_frames, video_name, frame_indices, fps, similarities=similarities)
 
 def image_search(query_image, video_features, video_frames, display_results_count=50, video_name=None, frame_indices=None, fps=None):
     """
@@ -279,7 +314,7 @@ def image_search(query_image, video_features, video_frames, display_results_coun
     video_features = video_features.float()
     similarities = (100.0 * video_features @ image_features.T)
     values, best_photo_idx = similarities.topk(display_results_count, dim=0)
-    display_results(best_photo_idx, video_frames, video_name, frame_indices, fps)
+    display_results(best_photo_idx, video_frames, video_name, frame_indices, fps, similarities=similarities)
 
 def text_and_image_search(search_query, query_image, video_features, video_frames, display_results_count=50, video_name=None, frame_indices=None, fps=None):
     """
@@ -315,7 +350,7 @@ def text_and_image_search(search_query, query_image, video_features, video_frame
     video_features = video_features.float()
     similarities = (100.0 * video_features @ combined_features.T)
     values, best_photo_idx = similarities.topk(display_results_count, dim=0)
-    display_results(best_photo_idx, video_frames, video_name, frame_indices, fps)
+    display_results(best_photo_idx, video_frames, video_name, frame_indices, fps, similarities=similarities)
 
 def load_cached_data(url):
     """
