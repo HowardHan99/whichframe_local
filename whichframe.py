@@ -170,7 +170,7 @@ def format_timestamp(seconds):
     seconds = seconds % 60
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
-def display_results(best_photo_idx, video_frames, video_name=None, frame_indices=None, fps=None, similarities=None):
+def display_results(best_photo_idx, video_frames, video_name=None, frame_indices=None, fps=None, similarities=None, output_dir="found_frames"):
     """
     Display and save search results.
     Args:
@@ -180,23 +180,19 @@ def display_results(best_photo_idx, video_frames, video_name=None, frame_indices
         frame_indices: List of frame indices for timestamp calculation
         fps: Frames per second for timestamp calculation
         similarities: Similarity scores for each frame
+        output_dir: Directory to save frames and results
     """
-    st.subheader("Top 50 Results (Filtered by 5-second intervals)")
+    st.write("Top 50 Results (Filtered by 5-second intervals)")
     
-    # Determine the output directory
-    if video_name:
-        output_dir = os.path.join("found_frames", os.path.splitext(video_name)[0])
+    # Create output directory if it doesn't exist
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
     else:
-        output_dir = "found_frames"
-    
-    # Clear the output directory before saving new matches
-    if os.path.exists(output_dir):
+        # Clear existing files
         for file in os.listdir(output_dir):
             file_path = os.path.join(output_dir, file)
             if os.path.isfile(file_path):
                 os.remove(file_path)
-    else:
-        os.makedirs(output_dir)
     
     # Initialize list to store results for CSV
     results_data = []
@@ -267,7 +263,7 @@ def text_search(search_query, video_features, video_frames, display_results_coun
     """
     Perform text-based semantic search on video frames.
     Args:
-        search_query: Text query to search for
+        search_query: Text query to search for. Can be a single string or a list of keywords
         video_features: Encoded features of video frames
         video_frames: List of video frames
         display_results_count: Number of results to display (default: 50)
@@ -275,20 +271,41 @@ def text_search(search_query, video_features, video_frames, display_results_coun
         frame_indices: List of frame indices for timestamp calculation
         fps: Frames per second for timestamp calculation
     """
-    display_results_count = min(display_results_count, len(video_frames))
+    # Handle multiple keywords
+    if isinstance(search_query, str):
+        keywords = [search_query]
+    elif isinstance(search_query, list):
+        keywords = search_query
+    else:
+        raise ValueError("search_query must be a string or a list of keywords")
     
-    # Encode text query using CLIP
-    with torch.no_grad():
-        text_tokens = openai_clip.tokenize(search_query).to(device)
-        text_features = model.encode_text(text_tokens)
-        text_features = text_features.float()
-        text_features /= text_features.norm(dim=-1, keepdim=True)
-    
-    # Calculate similarities and find best matches
-    video_features = video_features.float()
-    similarities = (100.0 * video_features @ text_features.T)
-    values, best_photo_idx = similarities.topk(display_results_count, dim=0)
-    display_results(best_photo_idx, video_frames, video_name, frame_indices, fps, similarities=similarities)
+    # Process each keyword separately
+    for keyword in keywords:
+        st.subheader(f"Results for keyword: '{keyword}'")
+        
+        # Encode text query using CLIP
+        with torch.no_grad():
+            text_tokens = openai_clip.tokenize(keyword).to(device)
+            text_features = model.encode_text(text_tokens)
+            text_features = text_features.float()
+            text_features /= text_features.norm(dim=-1, keepdim=True)
+            
+            # Calculate similarities for this keyword
+            video_features = video_features.float()
+            similarities = (100.0 * video_features @ text_features.T)
+            
+            # Find best matches for this keyword
+            values, best_photo_idx = similarities.topk(display_results_count, dim=0)
+            
+            # Create a subfolder for this keyword if saving locally
+            if video_name:
+                keyword_dir = os.path.join("found_frames", os.path.splitext(video_name)[0], keyword.replace(" ", "_"))
+            else:
+                keyword_dir = os.path.join("found_frames", keyword.replace(" ", "_"))
+            
+            # Display results for this keyword
+            display_results(best_photo_idx, video_frames, video_name, frame_indices, fps, 
+                          similarities=similarities, output_dir=keyword_dir)
 
 def image_search(query_image, video_features, video_frames, display_results_count=50, video_name=None, frame_indices=None, fps=None):
     """
@@ -642,10 +659,32 @@ if st.session_state.progress == 2:
     search_type = st.radio("Search Method", ["Text Search", "Image Search", "Text + Image Search"], index=0)
     
     if search_type == "Text Search":  # Text Search
-        text_query = st.text_input("Type a search query (e.g., 'red car' or 'person with sunglasses')")
+        st.write("Enter multiple keywords to search for different concepts in parallel")
+        
+        # Initialize keywords list in session state if it doesn't exist
+        if 'keywords' not in st.session_state:
+            st.session_state.keywords = [""]
+        
+        # Add/remove keyword fields
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            if st.button("Add Keyword"):
+                st.session_state.keywords.append("")
+        with col2:
+            if st.button("Remove Keyword") and len(st.session_state.keywords) > 1:
+                st.session_state.keywords.pop()
+        
+        # Keyword input fields
+        keywords = []
+        for i, default_text in enumerate(st.session_state.keywords):
+            keyword = st.text_input(f"Keyword {i+1}", value=default_text, key=f"keyword_{i}")
+            if keyword:  # Only add non-empty keywords
+                keywords.append(keyword)
+                st.session_state.keywords[i] = keyword
+        
         if st.button("Search"):
-            if not text_query:
-                st.error("Please enter a search query first")
+            if not keywords:
+                st.error("Please enter at least one keyword")
             else:
                 if isinstance(st.session_state.source, list):
                     # Process each video in the folder
@@ -654,10 +693,10 @@ if st.session_state.progress == 2:
                         frame_indices = st.session_state.all_frame_indices[idx]
                         fps = st.session_state.all_fps[idx]
                         st.subheader(f"Results for {video_name}")
-                        text_search(text_query, video_features, video_frames, 
+                        text_search(keywords, video_features, video_frames, 
                                   video_name=video_name, frame_indices=frame_indices, fps=fps)
                 else:
-                    text_search(text_query, st.session_state.video_features, st.session_state.video_frames,
+                    text_search(keywords, st.session_state.video_features, st.session_state.video_frames,
                               frame_indices=st.session_state.frame_indices, fps=st.session_state.fps)
     
     elif search_type == "Image Search":  # Image Search
