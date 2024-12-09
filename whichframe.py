@@ -22,6 +22,13 @@ model, preprocess = openai_clip.load("ViT-B/32", device=device)
 
 
 def fetch_video(source):
+    """
+    Fetch video from either YouTube URL or local file.
+    Args:
+        source: Either a YouTube URL or local file path
+    Returns:
+        tuple: (video_path, video_url) where video_path is None for YouTube videos
+    """
     if source.startswith('http'):  # YouTube URL
         try:
             ydl_opts = {
@@ -42,11 +49,29 @@ def fetch_video(source):
         return source, source
 
 def extract_frames(video, status_text, progress_bar):
-    cap = cv2.VideoCapture(video)
+    """
+    Extract frames from a video at regular intervals.
+    Args:
+        video: Path to video file or video URL
+        status_text: Streamlit text element for status updates
+        progress_bar: Streamlit progress bar element
+    Returns:
+        tuple: (frames, fps, frame_indices) containing extracted frames and metadata
+    """
+    # For local files, use the path directly
+    if isinstance(video, str) and os.path.isfile(video):
+        video_path = video
+    else:
+        video_path = video  # For YouTube URLs or other sources
+        
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise Exception(f"Could not open video: {video_path}")
+        
     frames = []
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    step = max(1, round(fps/2))
+    step = max(1, round(fps/2))  # Extract 2 frames per second
     total_frames = frame_count // step
     frame_indices = []
     
@@ -63,12 +88,6 @@ def extract_frames(video, status_text, progress_bar):
             frames.append(Image.fromarray(frame_rgb))
             frame_indices.append(i)
             
-            # Save frame if source is local file
-            if hasattr(st.session_state, 'source') and os.path.isfile(st.session_state.source):
-                frame_path = os.path.join("found_frames", f"frame_{frame_number:04d}.jpg")
-                Image.fromarray(frame_rgb).save(frame_path)
-                frame_number += 1
-            
             current_frame = len(frames)
             status_text.text(f'Extracting frames... ({min(current_frame, total_frames)}/{total_frames})')
             progress = min(current_frame / total_frames, 1.0)
@@ -78,7 +97,15 @@ def extract_frames(video, status_text, progress_bar):
     return frames, fps, frame_indices
 
 def encode_frames(video_frames, status_text):
-    batch_size = 256
+    """
+    Encode frames using CLIP model for semantic search.
+    Args:
+        video_frames: List of PIL Image frames
+        status_text: Streamlit text element for status updates
+    Returns:
+        torch.Tensor: Encoded features for all frames
+    """
+    batch_size = 256  # Process frames in batches to manage memory
     batches = math.ceil(len(video_frames) / batch_size)
     video_features = torch.empty([0, 512], dtype=torch.float32).to(device)
     
@@ -88,7 +115,7 @@ def encode_frames(video_frames, status_text):
         with torch.no_grad():
             batch_features = model.encode_image(batch_preprocessed)
             batch_features = batch_features.float()
-            batch_features /= batch_features.norm(dim=-1, keepdim=True)
+            batch_features /= batch_features.norm(dim=-1, keepdim=True)  # Normalize features
         video_features = torch.cat((video_features, batch_features))
         status_text.text(f'Encoding frames... ({(i+1)*batch_size}/{len(video_frames)})')
     
@@ -100,9 +127,21 @@ def img_to_bytes(img):
     img_byte_arr = img_byte_arr.getvalue()
     return img_byte_arr
 
-def get_youtube_timestamp_url(url, frame_idx, frame_indices):
+def get_youtube_timestamp_url(url, frame_idx, frame_indices, fps):
+    """
+    Generate YouTube URL with timestamp for a specific frame.
+    Args:
+        url: YouTube video URL
+        frame_idx: Index of the frame in the video_frames list
+        frame_indices: List of actual frame numbers in the video
+        fps: Frames per second of the video
+    Returns:
+        tuple: (timestamp_url, seconds) where timestamp_url is the YouTube URL with timestamp
+    """
+    if frame_indices is None or fps is None:
+        return None, None
+        
     frame_count = frame_indices[frame_idx]
-    fps = st.session_state.fps
     seconds = frame_count / fps
     seconds_rounded = int(seconds)
     
@@ -118,17 +157,32 @@ def get_youtube_timestamp_url(url, frame_idx, frame_indices):
     
     return f"https://youtu.be/{video_id}?t={seconds_rounded}", seconds
 
-def display_results(best_photo_idx, video_frames):
+def display_results(best_photo_idx, video_frames, video_name=None, frame_indices=None, fps=None):
+    """
+    Display and save search results.
+    Args:
+        best_photo_idx: Indices of best matching frames
+        video_frames: List of video frames
+        video_name: Name of the video (for multiple video mode)
+        frame_indices: List of frame indices for timestamp calculation
+        fps: Frames per second for timestamp calculation
+    """
     st.subheader("Top 10 Results")
     
-    # Clear the found_frames directory before saving new matches
-    if os.path.exists("found_frames"):
-        for file in os.listdir("found_frames"):
-            file_path = os.path.join("found_frames", file)
+    # Determine the output directory
+    if video_name:
+        output_dir = os.path.join("found_frames", os.path.splitext(video_name)[0])
+    else:
+        output_dir = "found_frames"
+    
+    # Clear the output directory before saving new matches
+    if os.path.exists(output_dir):
+        for file in os.listdir(output_dir):
+            file_path = os.path.join(output_dir, file)
             if os.path.isfile(file_path):
                 os.remove(file_path)
     else:
-        os.makedirs("found_frames")
+        os.makedirs(output_dir)
     
     # Save and display each matching frame
     for idx, frame_id in enumerate(best_photo_idx):
@@ -136,64 +190,119 @@ def display_results(best_photo_idx, video_frames):
         st.image(result, width=400)
         
         # Save the frame if it's from a local file
-        if hasattr(st.session_state, 'source') and os.path.isfile(st.session_state.source):
-            frame_path = os.path.join("found_frames", f"match_{idx:02d}.jpg")
+        if hasattr(st.session_state, 'source') and (
+            (isinstance(st.session_state.source, str) and os.path.isfile(st.session_state.source)) or
+            isinstance(st.session_state.source, list)
+        ):
+            frame_path = os.path.join(output_dir, f"match_{idx:02d}.jpg")
             result.save(frame_path)
         
-        timestamp_url, seconds = get_youtube_timestamp_url(st.session_state.url, frame_id, st.session_state.frame_indices)
-        if timestamp_url:
-            st.markdown(f"[▶️ Play video at {format_timespan(int(seconds))}]({timestamp_url})")
+        if video_name:
+            st.write(f"From video: {video_name}")
+        
+        # Only try to get timestamp for YouTube videos
+        if hasattr(st.session_state, 'url'):
+            timestamp_url, seconds = get_youtube_timestamp_url(st.session_state.url, frame_id, frame_indices, fps)
+            if timestamp_url:
+                st.markdown(f"[▶️ Play video at {format_timespan(int(seconds))}]({timestamp_url})")
 
-def text_search(search_query, video_features, video_frames, display_results_count=50):
+def text_search(search_query, video_features, video_frames, display_results_count=10, video_name=None, frame_indices=None, fps=None):
+    """
+    Perform text-based semantic search on video frames.
+    Args:
+        search_query: Text query to search for
+        video_features: Encoded features of video frames
+        video_frames: List of video frames
+        display_results_count: Number of results to display
+        video_name: Name of the video (for multiple video mode)
+        frame_indices: List of frame indices for timestamp calculation
+        fps: Frames per second for timestamp calculation
+    """
     display_results_count = min(display_results_count, len(video_frames))
     
+    # Encode text query using CLIP
     with torch.no_grad():
         text_tokens = openai_clip.tokenize(search_query).to(device)
         text_features = model.encode_text(text_tokens)
         text_features = text_features.float()
         text_features /= text_features.norm(dim=-1, keepdim=True)
     
+    # Calculate similarities and find best matches
     video_features = video_features.float()
-    
     similarities = (100.0 * video_features @ text_features.T)
     values, best_photo_idx = similarities.topk(display_results_count, dim=0)
-    display_results(best_photo_idx, video_frames)
+    display_results(best_photo_idx, video_frames, video_name, frame_indices, fps)
 
-def image_search(query_image, video_features, video_frames, display_results_count=50):
+def image_search(query_image, video_features, video_frames, display_results_count=10, video_name=None, frame_indices=None, fps=None):
+    """
+    Perform image-based semantic search on video frames.
+    Args:
+        query_image: PIL Image to search for
+        video_features: Encoded features of video frames
+        video_frames: List of video frames
+        display_results_count: Number of results to display
+        video_name: Name of the video (for multiple video mode)
+        frame_indices: List of frame indices for timestamp calculation
+        fps: Frames per second for timestamp calculation
+    """
+    # Preprocess and encode query image using CLIP
     query_image = preprocess(query_image).unsqueeze(0).to(device)
     
     with torch.no_grad():
         image_features = model.encode_image(query_image)
         image_features = image_features.float()
-        image_features /= image_features.norm(dim=-1, keepdim=True)
+        image_features /= image_features.norm(dim=-1, keepdim=True)  # Normalize features
     
+    # Calculate similarities and find best matches
     video_features = video_features.float()
-    
     similarities = (100.0 * video_features @ image_features.T)
     values, best_photo_idx = similarities.topk(display_results_count, dim=0)
-    display_results(best_photo_idx, video_frames)
+    display_results(best_photo_idx, video_frames, video_name, frame_indices, fps)
 
-def text_and_image_search(search_query, query_image, video_features, video_frames, display_results_count=10):
+def text_and_image_search(search_query, query_image, video_features, video_frames, display_results_count=10, video_name=None, frame_indices=None, fps=None):
+    """
+    Perform combined text and image semantic search on video frames.
+    Args:
+        search_query: Text query to search for
+        query_image: PIL Image to search for
+        video_features: Encoded features of video frames
+        video_frames: List of video frames
+        display_results_count: Number of results to display
+        video_name: Name of the video (for multiple video mode)
+        frame_indices: List of frame indices for timestamp calculation
+        fps: Frames per second for timestamp calculation
+    """
+    # Encode text query using CLIP
     with torch.no_grad():
         text_tokens = openai_clip.tokenize(search_query).to(device)
         text_features = model.encode_text(text_tokens)
         text_features = text_features.float()
         text_features /= text_features.norm(dim=-1, keepdim=True)
     
+    # Encode image query using CLIP
     query_image = preprocess(query_image).unsqueeze(0).to(device)
     with torch.no_grad():
         image_features = model.encode_image(query_image)
         image_features = image_features.float()
         image_features /= image_features.norm(dim=-1, keepdim=True)
     
+    # Combine text and image features with equal weights
     combined_features = (text_features + image_features) / 2
     
+    # Calculate similarities and find best matches
     video_features = video_features.float()
     similarities = (100.0 * video_features @ combined_features.T)
     values, best_photo_idx = similarities.topk(display_results_count, dim=0)
-    display_results(best_photo_idx, video_frames)
+    display_results(best_photo_idx, video_frames, video_name, frame_indices, fps)
 
 def load_cached_data(url):
+    """
+    Load cached video data for the example URL.
+    Args:
+        url: YouTube video URL
+    Returns:
+        tuple: (video_frames, video_features, fps, frame_indices) or (None, None, None, None) if not cached
+    """
     if url == EXAMPLE_URL:
         try:
             video_frames = np.load(f"{CACHED_DATA_PATH}example_frames.npy", allow_pickle=True)
@@ -206,6 +315,15 @@ def load_cached_data(url):
     return None, None, None, None
 
 def save_cached_data(url, video_frames, video_features, fps, frame_indices):
+    """
+    Save video data to cache for the example URL.
+    Args:
+        url: YouTube video URL
+        video_frames: List of video frames
+        video_features: Encoded features of video frames
+        fps: Frames per second of the video
+        frame_indices: List of frame indices
+    """
     if url == EXAMPLE_URL:
         os.makedirs(CACHED_DATA_PATH, exist_ok=True)
         np.save(f"{CACHED_DATA_PATH}example_frames.npy", video_frames)
@@ -307,25 +425,29 @@ if source_type == "YouTube URL":
     source = url
 elif source_type == "Local File":
     folder_path = st.text_input("Enter path to video folder or file")
+    source = None
     if folder_path and os.path.exists(folder_path):
         if os.path.isdir(folder_path):
             # If it's a directory, list all video files
             video_files = [f for f in os.listdir(folder_path) 
                          if f.lower().endswith(('.mp4', '.avi', '.mov'))]
-            if video_files:
-                selected_video = st.selectbox("Select video file", video_files)
-                source = os.path.join(folder_path, selected_video)
+            if len(video_files) > 0:
+                # Always show processing mode for directories
+                process_mode = st.radio("Processing Mode", ["Single Video", "All Videos"])
+                st.write(f"Found {len(video_files)} videos in folder")
+                
+                if process_mode == "Single Video":
+                    selected_video = st.selectbox("Select video file", video_files)
+                    source = os.path.join(folder_path, selected_video)
+                else:  # All Videos
+                    source = [os.path.join(folder_path, video) for video in video_files]
             else:
                 st.error("No video files found in the specified folder")
-                source = None
         elif os.path.isfile(folder_path) and folder_path.lower().endswith(('.mp4', '.avi', '.mov')):
             # If it's a direct file path
             source = folder_path
         else:
             st.error("Please enter a valid video file path or folder containing videos")
-            source = None
-    else:
-        source = None
 else:  # Load Video
     uploaded_file = st.file_uploader("Upload a video file", type=['mp4', 'avi', 'mov'])
     if uploaded_file:
@@ -347,57 +469,100 @@ if st.button("Process Video"):
         st.error("Please provide a video source first")
     else:
         try:
-            st.session_state.source = source
             if source_type == "YouTube URL" and not source.startswith('http'):
                 st.error("Please enter a valid YouTube URL")
                 st.stop()
             
-            # Clear the found_frames directory if it's a local file
-            if source_type == "Local File" and os.path.exists("found_frames"):
-                for file in os.listdir("found_frames"):
-                    file_path = os.path.join("found_frames", file)
-                    if os.path.isfile(file_path):
-                        os.remove(file_path)
+            # Store source in session state before processing
+            st.session_state.source = source
             
-            cached_frames, cached_features, cached_fps, cached_frame_indices = load_cached_data(source)
-            
-            if cached_frames is not None:
-                st.session_state.video_frames = cached_frames
-                st.session_state.video_features = cached_features
-                st.session_state.fps = cached_fps
-                st.session_state.frame_indices = cached_frame_indices
-                st.session_state.progress = 2
-                st.success("Loaded cached video data!")
-            else:
-                with st.spinner('Fetching video...'):
-                    video, video_url = fetch_video(source)
+            # Handle single video or multiple videos
+            if isinstance(source, list):  # Multiple videos
+                # Initialize lists to store all videos' data
+                st.session_state.all_video_frames = []
+                st.session_state.all_video_features = []
+                st.session_state.all_video_names = []
+                st.session_state.all_fps = []
+                st.session_state.all_frame_indices = []
                 
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                # Extract frames
-                st.session_state.video_frames, st.session_state.fps, st.session_state.frame_indices = extract_frames(video_url, status_text, progress_bar)
-                
-                # Encode frames
-                st.session_state.video_features = encode_frames(st.session_state.video_frames, status_text)
-                
-                if source_type == "YouTube URL":  # Only cache YouTube videos
-                    save_cached_data(source, st.session_state.video_frames, st.session_state.video_features, st.session_state.fps, st.session_state.frame_indices)
-                
-                status_text.text('Finalizing...')
-                st.session_state.progress = 2
-                progress_bar.progress(100)
-                status_text.empty()
-                progress_bar.empty()
-                st.success("Video processed successfully!")
-                
-                # Clean up temporary file if it exists
-                if source_type == "Load Video" and hasattr(st.session_state, 'temp_path'):
+                total_videos = len(source)
+                for video_idx, video_path in enumerate(source):
+                    video_name = os.path.basename(video_path)
+                    st.write(f"Processing video {video_idx + 1}/{total_videos}: {video_name}")
+                    
+                    # Create a subfolder for this video's frames
+                    video_frames_dir = os.path.join("found_frames", os.path.splitext(video_name)[0])
+                    if not os.path.exists(video_frames_dir):
+                        os.makedirs(video_frames_dir)
+                    
+                    # Process the video
                     try:
-                        if os.path.exists(st.session_state.temp_path):
-                            os.remove(st.session_state.temp_path)
-                    except Exception:
-                        pass  # Silently ignore cleanup errors
+                        with st.spinner(f'Processing {video_name}...'):
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            
+                            # For local files, use the path directly
+                            if os.path.isfile(video_path):
+                                # Extract frames directly from the video path
+                                video_frames, fps, frame_indices = extract_frames(video_path, status_text, progress_bar)
+                                
+                                # Encode frames
+                                video_features = encode_frames(video_frames, status_text)
+                                
+                                # Store this video's data
+                                st.session_state.all_video_frames.append(video_frames)
+                                st.session_state.all_video_features.append(video_features)
+                                st.session_state.all_video_names.append(video_name)
+                                st.session_state.all_fps.append(fps)
+                                st.session_state.all_frame_indices.append(frame_indices)
+                            else:
+                                raise Exception(f"Video file not found: {video_path}")
+                            
+                            status_text.empty()
+                            progress_bar.empty()
+                        
+                        st.success(f"Finished processing {video_name}")
+                    except Exception as e:
+                        st.error(f"Error processing {video_name}: {str(e)}")
+                        continue  # Continue with next video even if this one fails
+                
+                if len(st.session_state.all_video_frames) > 0:
+                    st.session_state.progress = 2
+                    st.success(f"Successfully processed {len(st.session_state.all_video_frames)} out of {total_videos} videos")
+                else:
+                    st.error("Failed to process any videos")
+                
+            else:  # Single video
+                cached_frames, cached_features, cached_fps, cached_frame_indices = load_cached_data(source)
+                
+                if cached_frames is not None:
+                    st.session_state.video_frames = cached_frames
+                    st.session_state.video_features = cached_features
+                    st.session_state.fps = cached_fps
+                    st.session_state.frame_indices = cached_frame_indices
+                    st.session_state.progress = 2
+                    st.success("Loaded cached video data!")
+                else:
+                    with st.spinner('Processing video...'):
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        # Extract frames
+                        st.session_state.video_frames, st.session_state.fps, st.session_state.frame_indices = extract_frames(source, status_text, progress_bar)
+                        
+                        # Encode frames
+                        st.session_state.video_features = encode_frames(st.session_state.video_frames, status_text)
+                        
+                        if source_type == "YouTube URL":  # Only cache YouTube videos
+                            save_cached_data(source, st.session_state.video_frames, st.session_state.video_features, st.session_state.fps, st.session_state.frame_indices)
+                        
+                        status_text.text('Finalizing...')
+                        st.session_state.progress = 2
+                        progress_bar.progress(100)
+                        status_text.empty()
+                        progress_bar.empty()
+                        st.success("Video processed successfully!")
+                    
         except Exception as e:
             st.error(f"Error processing video: {str(e)}")
             # Clean up temp file if it exists in session state
@@ -425,7 +590,19 @@ if st.session_state.progress == 2:
             if not text_query:
                 st.error("Please enter a search query first")
             else:
-                text_search(text_query, st.session_state.video_features, st.session_state.video_frames)
+                if isinstance(st.session_state.source, list):
+                    # Process each video in the folder
+                    for idx, (video_frames, video_features) in enumerate(zip(st.session_state.all_video_frames, st.session_state.all_video_features)):
+                        video_name = st.session_state.all_video_names[idx]
+                        frame_indices = st.session_state.all_frame_indices[idx]
+                        fps = st.session_state.all_fps[idx]
+                        st.subheader(f"Results for {video_name}")
+                        text_search(text_query, video_features, video_frames, 
+                                  video_name=video_name, frame_indices=frame_indices, fps=fps)
+                else:
+                    text_search(text_query, st.session_state.video_features, st.session_state.video_frames,
+                              frame_indices=st.session_state.frame_indices, fps=st.session_state.fps)
+    
     elif search_type == "Image Search":  # Image Search
         uploaded_file = st.file_uploader("Upload a query image", type=['png', 'jpg', 'jpeg'])
         if uploaded_file is not None:
@@ -435,7 +612,19 @@ if st.session_state.progress == 2:
             if uploaded_file is None:
                 st.error("Please upload an image first")
             else:
-                image_search(query_image, st.session_state.video_features, st.session_state.video_frames)
+                if isinstance(st.session_state.source, list):
+                    # Process each video in the folder
+                    for idx, (video_frames, video_features) in enumerate(zip(st.session_state.all_video_frames, st.session_state.all_video_features)):
+                        video_name = st.session_state.all_video_names[idx]
+                        frame_indices = st.session_state.all_frame_indices[idx]
+                        fps = st.session_state.all_fps[idx]
+                        st.subheader(f"Results for {video_name}")
+                        image_search(query_image, video_features, video_frames,
+                                   video_name=video_name, frame_indices=frame_indices, fps=fps)
+                else:
+                    image_search(query_image, st.session_state.video_features, st.session_state.video_frames,
+                               frame_indices=st.session_state.frame_indices, fps=st.session_state.fps)
+    
     else:  # Text + Image Search
         text_query = st.text_input("Type a search query")
         uploaded_file = st.file_uploader("Upload a query image", type=['png', 'jpg', 'jpeg'])
@@ -447,7 +636,18 @@ if st.session_state.progress == 2:
             if not text_query or uploaded_file is None:
                 st.error("Please provide both text query and image")
             else:
-                text_and_image_search(text_query, query_image, st.session_state.video_features, st.session_state.video_frames)
+                if isinstance(st.session_state.source, list):
+                    # Process each video in the folder
+                    for idx, (video_frames, video_features) in enumerate(zip(st.session_state.all_video_frames, st.session_state.all_video_features)):
+                        video_name = st.session_state.all_video_names[idx]
+                        frame_indices = st.session_state.all_frame_indices[idx]
+                        fps = st.session_state.all_fps[idx]
+                        st.subheader(f"Results for {video_name}")
+                        text_and_image_search(text_query, query_image, video_features, video_frames,
+                                           video_name=video_name, frame_indices=frame_indices, fps=fps)
+                else:
+                    text_and_image_search(text_query, query_image, st.session_state.video_features, st.session_state.video_frames,
+                                        frame_indices=st.session_state.frame_indices, fps=st.session_state.fps)
 
 st.markdown("---")
 st.markdown(
