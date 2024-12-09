@@ -300,13 +300,17 @@ elif source_type == "Local File":
         source = None
 else:  # Load Video
     uploaded_file = st.file_uploader("Upload a video file", type=['mp4', 'avi', 'mov'])
-    temp_path = None  # Initialize temp_path
     if uploaded_file:
-        # Save the uploaded file temporarily
-        temp_path = f"temp_video_{int(time.time())}.mp4"
-        with open(temp_path, "wb") as f:
-            f.write(uploaded_file.getvalue())
-        source = temp_path
+        try:
+            # Save the uploaded file temporarily
+            temp_path = f"temp_video_{int(time.time())}.mp4"
+            with open(temp_path, "wb") as f:
+                f.write(uploaded_file.getvalue())
+            source = temp_path
+            st.session_state.temp_path = temp_path  # Store temp_path in session state
+        except Exception as e:
+            st.error(f"Error saving uploaded file: {str(e)}")
+            source = None
     else:
         source = None
 
@@ -353,14 +357,29 @@ if st.button("Process Video"):
                 st.success("Video processed successfully!")
                 
                 # Clean up temporary file if it exists
-                if source_type == "Local File" and os.path.exists(temp_path):
-                    os.remove(temp_path)
-                
+                if source_type == "Load Video" and hasattr(st.session_state, 'temp_path'):
+                    try:
+                        if os.path.exists(st.session_state.temp_path):
+                            os.remove(st.session_state.temp_path)
+                    except Exception:
+                        pass  # Silently ignore cleanup errors
         except Exception as e:
             st.error(f"Error processing video: {str(e)}")
-            # Only try to remove temp_path if we're in "Load Video" mode and temp_path exists
-            if source_type == "Load Video" and 'temp_path' in locals() and temp_path and os.path.exists(temp_path):
-                os.remove(temp_path)
+            # Clean up temp file if it exists in session state
+            if source_type == "Load Video" and hasattr(st.session_state, 'temp_path'):
+                try:
+                    if os.path.exists(st.session_state.temp_path):
+                        os.remove(st.session_state.temp_path)
+                except Exception:
+                    pass  # Silently ignore cleanup errors
+        finally:
+            # Always try to clean up temp file after processing
+            if source_type == "Load Video" and hasattr(st.session_state, 'temp_path'):
+                try:
+                    if os.path.exists(st.session_state.temp_path):
+                        os.remove(st.session_state.temp_path)
+                except Exception:
+                    pass  # Silently ignore cleanup errors
 
 if st.session_state.progress == 2:
     search_type = st.radio("Search Method", ["Text Search", "Image Search", "Text + Image Search"], index=0)
