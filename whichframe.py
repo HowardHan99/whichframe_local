@@ -49,6 +49,12 @@ def extract_frames(video, status_text, progress_bar):
     step = max(1, round(fps/2))
     total_frames = frame_count // step
     frame_indices = []
+    
+    # Create directory if it doesn't exist
+    if not os.path.exists("found_frames"):
+        os.makedirs("found_frames")
+    
+    frame_number = 0
     for i in range(0, frame_count, step):
         cap.set(cv2.CAP_PROP_POS_FRAMES, i)
         ret, frame = cap.read()
@@ -56,6 +62,12 @@ def extract_frames(video, status_text, progress_bar):
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frames.append(Image.fromarray(frame_rgb))
             frame_indices.append(i)
+            
+            # Save frame if source is local file
+            if hasattr(st.session_state, 'source') and os.path.isfile(st.session_state.source):
+                frame_path = os.path.join("found_frames", f"frame_{frame_number:04d}.jpg")
+                Image.fromarray(frame_rgb).save(frame_path)
+                frame_number += 1
             
             current_frame = len(frames)
             status_text.text(f'Extracting frames... ({min(current_frame, total_frames)}/{total_frames})')
@@ -108,15 +120,31 @@ def get_youtube_timestamp_url(url, frame_idx, frame_indices):
 
 def display_results(best_photo_idx, video_frames):
     st.subheader("Top 10 Results")
-    for frame_id in best_photo_idx:
+    
+    # Clear the found_frames directory before saving new matches
+    if os.path.exists("found_frames"):
+        for file in os.listdir("found_frames"):
+            file_path = os.path.join("found_frames", file)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+    else:
+        os.makedirs("found_frames")
+    
+    # Save and display each matching frame
+    for idx, frame_id in enumerate(best_photo_idx):
         result = video_frames[frame_id]
         st.image(result, width=400)
+        
+        # Save the frame if it's from a local file
+        if hasattr(st.session_state, 'source') and os.path.isfile(st.session_state.source):
+            frame_path = os.path.join("found_frames", f"match_{idx:02d}.jpg")
+            result.save(frame_path)
         
         timestamp_url, seconds = get_youtube_timestamp_url(st.session_state.url, frame_id, st.session_state.frame_indices)
         if timestamp_url:
             st.markdown(f"[▶️ Play video at {format_timespan(int(seconds))}]({timestamp_url})")
 
-def text_search(search_query, video_features, video_frames, display_results_count=10):
+def text_search(search_query, video_features, video_frames, display_results_count=50):
     display_results_count = min(display_results_count, len(video_frames))
     
     with torch.no_grad():
@@ -131,7 +159,7 @@ def text_search(search_query, video_features, video_frames, display_results_coun
     values, best_photo_idx = similarities.topk(display_results_count, dim=0)
     display_results(best_photo_idx, video_frames)
 
-def image_search(query_image, video_features, video_frames, display_results_count=10):
+def image_search(query_image, video_features, video_frames, display_results_count=50):
     query_image = preprocess(query_image).unsqueeze(0).to(device)
     
     with torch.no_grad():
@@ -323,7 +351,14 @@ if st.button("Process Video"):
             if source_type == "YouTube URL" and not source.startswith('http'):
                 st.error("Please enter a valid YouTube URL")
                 st.stop()
-                
+            
+            # Clear the found_frames directory if it's a local file
+            if source_type == "Local File" and os.path.exists("found_frames"):
+                for file in os.listdir("found_frames"):
+                    file_path = os.path.join("found_frames", file)
+                    if os.path.isfile(file_path):
+                        os.remove(file_path)
+            
             cached_frames, cached_features, cached_fps, cached_frame_indices = load_cached_data(source)
             
             if cached_frames is not None:
