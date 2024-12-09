@@ -273,12 +273,34 @@ if 'url' not in st.session_state:
 
 url = st.text_input("Enter a YouTube URL (e.g., https://www.youtube.com/watch?v=zTvJJnoWIPk)", key="url_input")
 
-source_type = st.radio("Video Source", ["YouTube URL", "Local File"])
+source_type = st.radio("Video Source", ["YouTube URL", "Local File","Load Video"])
 
 if source_type == "YouTube URL":
     source = url
-else:
+elif source_type == "Local File":
+    folder_path = st.text_input("Enter path to video folder or file")
+    if folder_path and os.path.exists(folder_path):
+        if os.path.isdir(folder_path):
+            # If it's a directory, list all video files
+            video_files = [f for f in os.listdir(folder_path) 
+                         if f.lower().endswith(('.mp4', '.avi', '.mov'))]
+            if video_files:
+                selected_video = st.selectbox("Select video file", video_files)
+                source = os.path.join(folder_path, selected_video)
+            else:
+                st.error("No video files found in the specified folder")
+                source = None
+        elif os.path.isfile(folder_path) and folder_path.lower().endswith(('.mp4', '.avi', '.mov')):
+            # If it's a direct file path
+            source = folder_path
+        else:
+            st.error("Please enter a valid video file path or folder containing videos")
+            source = None
+    else:
+        source = None
+else:  # Load Video
     uploaded_file = st.file_uploader("Upload a video file", type=['mp4', 'avi', 'mov'])
+    temp_path = None  # Initialize temp_path
     if uploaded_file:
         # Save the uploaded file temporarily
         temp_path = f"temp_video_{int(time.time())}.mp4"
@@ -288,45 +310,6 @@ else:
     else:
         source = None
 
-# if st.button("Process Video"):
-#     if not source:
-#         st.error("Please enter a YouTube URL or upload a video file first")
-#     else:
-#         try:
-#             cached_frames, cached_features, cached_fps, cached_frame_indices = load_cached_data(source)
-            
-#             if cached_frames is not None:
-#                 st.session_state.video_frames = cached_frames
-#                 st.session_state.video_features = cached_features
-#                 st.session_state.fps = cached_fps
-#                 st.session_state.frame_indices = cached_frame_indices
-#                 st.session_state.url = url
-#                 st.session_state.progress = 2
-#                 st.success("Loaded cached video data!")
-#             else:
-#                 with st.spinner('Fetching video...'):
-#                     video, video_url = fetch_video(source)
-#                     st.session_state.url = source
-                
-#                 progress_bar = st.progress(0)
-#                 status_text = st.empty()
-                
-#                 # Extract frames
-#                 st.session_state.video_frames, st.session_state.fps, st.session_state.frame_indices = extract_frames(video_url, status_text, progress_bar)
-                
-#                 # Encode frames
-#                 st.session_state.video_features = encode_frames(st.session_state.video_frames, status_text)
-                
-#                 save_cached_data(source, st.session_state.video_frames, st.session_state.video_features, st.session_state.fps, st.session_state.frame_indices)
-#                 status_text.text('Finalizing...')
-#                 st.session_state.progress = 2
-#                 progress_bar.progress(100)
-#                 status_text.empty()
-#                 progress_bar.empty()
-#                 st.success("Video processed successfully!")
-                
-#         except Exception as e:
-#             st.error(f"Error processing video: {str(e)}")
 if st.button("Process Video"):
     if not source:
         st.error("Please provide a video source first")
@@ -375,7 +358,8 @@ if st.button("Process Video"):
                 
         except Exception as e:
             st.error(f"Error processing video: {str(e)}")
-            if source_type == "Local File" and os.path.exists(temp_path):
+            # Only try to remove temp_path if we're in "Load Video" mode and temp_path exists
+            if source_type == "Load Video" and 'temp_path' in locals() and temp_path and os.path.exists(temp_path):
                 os.remove(temp_path)
 
 if st.session_state.progress == 2:
