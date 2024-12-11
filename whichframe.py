@@ -482,180 +482,14 @@ if 'fps' not in st.session_state:
 if 'video_name' not in st.session_state:
     st.session_state.video_name = 'videos/example.mp4'
 
-st.title("Which Frame? 🎞️🔍")
-st.markdown("""
-Search a video semantically. For example, which frame has "a person with sunglasses"?
-Search using text, images, or a mix of text + image. WhichFrame uses [CLIP](https://github.com/openai/CLIP) for zero-shot frame classification.
-""")
+# Initialize session state for search parameters if not exists
+if 'search_initialized' not in st.session_state:
+    st.session_state.search_initialized = False
+    st.session_state.search_params = None
 
-if 'url' not in st.session_state:
-    st.session_state.url = ''
-
-url = st.text_input("Enter a YouTube URL (e.g., https://www.youtube.com/watch?v=zTvJJnoWIPk)", key="url_input")
-
-source_type = st.radio("Video Source", ["YouTube URL", "Local File","Load Video"])
-
-if source_type == "YouTube URL":
-    source = url
-elif source_type == "Local File":
-    folder_path = st.text_input("Enter path to video folder or file")
-    source = None
-    if folder_path and os.path.exists(folder_path):
-        if os.path.isdir(folder_path):
-            # If it's a directory, list all video files
-            video_files = [f for f in os.listdir(folder_path) 
-                         if f.lower().endswith(('.mp4', '.avi', '.mov'))]
-            if len(video_files) > 0:
-                # Always show processing mode for directories
-                process_mode = st.radio("Processing Mode", ["Single Video", "All Videos"])
-                st.write(f"Found {len(video_files)} videos in folder")
-                
-                if process_mode == "Single Video":
-                    selected_video = st.selectbox("Select video file", video_files)
-                    source = os.path.join(folder_path, selected_video)
-                else:  # All Videos
-                    source = [os.path.join(folder_path, video) for video in video_files]
-            else:
-                st.error("No video files found in the specified folder")
-        elif os.path.isfile(folder_path) and folder_path.lower().endswith(('.mp4', '.avi', '.mov')):
-            # If it's a direct file path
-            source = folder_path
-        else:
-            st.error("Please enter a valid video file path or folder containing videos")
-else:  # Load Video
-    uploaded_file = st.file_uploader("Upload a video file", type=['mp4', 'avi', 'mov'])
-    if uploaded_file:
-        try:
-            # Save the uploaded file temporarily
-            temp_path = f"temp_video_{int(time.time())}.mp4"
-            with open(temp_path, "wb") as f:
-                f.write(uploaded_file.getvalue())
-            source = temp_path
-            st.session_state.temp_path = temp_path  # Store temp_path in session state
-        except Exception as e:
-            st.error(f"Error saving uploaded file: {str(e)}")
-            source = None
-    else:
-        source = None
-
-if st.button("Process Video"):
-    if not source:
-        st.error("Please provide a video source first")
-    else:
-        try:
-            if source_type == "YouTube URL" and not source.startswith('http'):
-                st.error("Please enter a valid YouTube URL")
-                st.stop()
-            
-            # Store source in session state before processing
-            st.session_state.source = source
-            
-            # Handle single video or multiple videos
-            if isinstance(source, list):  # Multiple videos
-                # Initialize lists to store all videos' data
-                st.session_state.all_video_frames = []
-                st.session_state.all_video_features = []
-                st.session_state.all_video_names = []
-                st.session_state.all_fps = []
-                st.session_state.all_frame_indices = []
-                
-                total_videos = len(source)
-                for video_idx, video_path in enumerate(source):
-                    video_name = os.path.basename(video_path)
-                    st.write(f"Processing video {video_idx + 1}/{total_videos}: {video_name}")
-                    
-                    # Create a subfolder for this video's frames
-                    video_frames_dir = os.path.join("found_frames", os.path.splitext(video_name)[0])
-                    if not os.path.exists(video_frames_dir):
-                        os.makedirs(video_frames_dir)
-                    
-                    # Process the video
-                    try:
-                        with st.spinner(f'Processing {video_name}...'):
-                            progress_bar = st.progress(0)
-                            status_text = st.empty()
-                            
-                            # For local files, use the path directly
-                            if os.path.isfile(video_path):
-                                # Extract frames directly from the video path
-                                video_frames, fps, frame_indices = extract_frames(video_path, status_text, progress_bar)
-                                
-                                # Encode frames
-                                video_features = encode_frames(video_frames, status_text)
-                                
-                                # Store this video's data
-                                st.session_state.all_video_frames.append(video_frames)
-                                st.session_state.all_video_features.append(video_features)
-                                st.session_state.all_video_names.append(video_name)
-                                st.session_state.all_fps.append(fps)
-                                st.session_state.all_frame_indices.append(frame_indices)
-                            else:
-                                raise Exception(f"Video file not found: {video_path}")
-                            
-                            status_text.empty()
-                            progress_bar.empty()
-                        
-                        st.success(f"Finished processing {video_name}")
-                    except Exception as e:
-                        st.error(f"Error processing {video_name}: {str(e)}")
-                        continue  # Continue with next video even if this one fails
-                
-                if len(st.session_state.all_video_frames) > 0:
-                    st.session_state.progress = 2
-                    st.success(f"Successfully processed {len(st.session_state.all_video_frames)} out of {total_videos} videos")
-                else:
-                    st.error("Failed to process any videos")
-                
-            else:  # Single video
-                cached_frames, cached_features, cached_fps, cached_frame_indices = load_cached_data(source)
-                
-                if cached_frames is not None:
-                    st.session_state.video_frames = cached_frames
-                    st.session_state.video_features = cached_features
-                    st.session_state.fps = cached_fps
-                    st.session_state.frame_indices = cached_frame_indices
-                    st.session_state.progress = 2
-                    st.success("Loaded cached video data!")
-                else:
-                    with st.spinner('Processing video...'):
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-                        
-                        # Extract frames
-                        st.session_state.video_frames, st.session_state.fps, st.session_state.frame_indices = extract_frames(source, status_text, progress_bar)
-                        
-                        # Encode frames
-                        st.session_state.video_features = encode_frames(st.session_state.video_frames, status_text)
-                        
-                        if source_type == "YouTube URL":  # Only cache YouTube videos
-                            save_cached_data(source, st.session_state.video_frames, st.session_state.video_features, st.session_state.fps, st.session_state.frame_indices)
-                        
-                        status_text.text('Finalizing...')
-                        st.session_state.progress = 2
-                        progress_bar.progress(100)
-                        status_text.empty()
-                        progress_bar.empty()
-                        st.success("Video processed successfully!")
-                    
-        except Exception as e:
-            st.error(f"Error processing video: {str(e)}")
-            # Clean up temp file if it exists in session state
-            if source_type == "Load Video" and hasattr(st.session_state, 'temp_path'):
-                try:
-                    if os.path.exists(st.session_state.temp_path):
-                        os.remove(st.session_state.temp_path)
-                except Exception:
-                    pass  # Silently ignore cleanup errors
-        finally:
-            # Always try to clean up temp file after processing
-            if source_type == "Load Video" and hasattr(st.session_state, 'temp_path'):
-                try:
-                    if os.path.exists(st.session_state.temp_path):
-                        os.remove(st.session_state.temp_path)
-                except Exception:
-                    pass  # Silently ignore cleanup errors
-
-if st.session_state.progress == 2:
+# First phase: Get search parameters
+if not st.session_state.search_initialized:
+    st.title("Step 1: Define Search Criteria")
     search_type = st.radio("Search Method", ["Text Search", "Image Search", "Text + Image Search"], index=0)
     
     if search_type == "Text Search":  # Text Search
@@ -682,44 +516,15 @@ if st.session_state.progress == 2:
                 keywords.append(keyword)
                 st.session_state.keywords[i] = keyword
         
-        if st.button("Search"):
-            if not keywords:
-                st.error("Please enter at least one keyword")
-            else:
-                if isinstance(st.session_state.source, list):
-                    # Process each video in the folder
-                    for idx, (video_frames, video_features) in enumerate(zip(st.session_state.all_video_frames, st.session_state.all_video_features)):
-                        video_name = st.session_state.all_video_names[idx]
-                        frame_indices = st.session_state.all_frame_indices[idx]
-                        fps = st.session_state.all_fps[idx]
-                        st.subheader(f"Results for {video_name}")
-                        text_search(keywords, video_features, video_frames, 
-                                  video_name=video_name, frame_indices=frame_indices, fps=fps)
-                else:
-                    text_search(keywords, st.session_state.video_features, st.session_state.video_frames,
-                              frame_indices=st.session_state.frame_indices, fps=st.session_state.fps)
+        if keywords:
+            st.session_state.search_params = {"type": "text", "keywords": keywords}
     
     elif search_type == "Image Search":  # Image Search
         uploaded_file = st.file_uploader("Upload a query image", type=['png', 'jpg', 'jpeg'])
         if uploaded_file is not None:
             query_image = Image.open(uploaded_file).convert('RGB')
             st.image(query_image, caption="Query Image", width=200)
-        if st.button("Search"):
-            if uploaded_file is None:
-                st.error("Please upload an image first")
-            else:
-                if isinstance(st.session_state.source, list):
-                    # Process each video in the folder
-                    for idx, (video_frames, video_features) in enumerate(zip(st.session_state.all_video_frames, st.session_state.all_video_features)):
-                        video_name = st.session_state.all_video_names[idx]
-                        frame_indices = st.session_state.all_frame_indices[idx]
-                        fps = st.session_state.all_fps[idx]
-                        st.subheader(f"Results for {video_name}")
-                        image_search(query_image, video_features, video_frames,
-                                   video_name=video_name, frame_indices=frame_indices, fps=fps)
-                else:
-                    image_search(query_image, st.session_state.video_features, st.session_state.video_frames,
-                               frame_indices=st.session_state.frame_indices, fps=st.session_state.fps)
+            st.session_state.search_params = {"type": "image", "query_image": query_image}
     
     else:  # Text + Image Search
         text_query = st.text_input("Type a search query")
@@ -727,23 +532,191 @@ if st.session_state.progress == 2:
         if uploaded_file is not None:
             query_image = Image.open(uploaded_file).convert('RGB')
             st.image(query_image, caption="Query Image", width=200)
-        
-        if st.button("Search"):
-            if not text_query or uploaded_file is None:
-                st.error("Please provide both text query and image")
-            else:
-                if isinstance(st.session_state.source, list):
-                    # Process each video in the folder
-                    for idx, (video_frames, video_features) in enumerate(zip(st.session_state.all_video_frames, st.session_state.all_video_features)):
-                        video_name = st.session_state.all_video_names[idx]
-                        frame_indices = st.session_state.all_frame_indices[idx]
-                        fps = st.session_state.all_fps[idx]
-                        st.subheader(f"Results for {video_name}")
-                        text_and_image_search(text_query, query_image, video_features, video_frames,
-                                           video_name=video_name, frame_indices=frame_indices, fps=fps)
+            if text_query:
+                st.session_state.search_params = {"type": "text_and_image", "text": text_query, "query_image": query_image}
+    
+    # Confirm search parameters
+    if st.session_state.search_params is not None:
+        if st.button("Confirm Search Criteria"):
+            st.session_state.search_initialized = True
+            st.rerun()
+    else:
+        st.warning("Please complete the search criteria before proceeding")
+
+# Second phase: Process videos
+else:
+    st.title("Step 2: Process Videos")
+    
+    # Add option to modify search criteria
+    if st.button("Modify Search Criteria"):
+        st.session_state.search_initialized = False
+        st.rerun()
+    
+    # Show current search criteria
+    st.subheader("Current Search Criteria:")
+    if st.session_state.search_params["type"] == "text":
+        st.write("Type: Text Search")
+        st.write("Keywords:", ", ".join(st.session_state.search_params["keywords"]))
+    elif st.session_state.search_params["type"] == "image":
+        st.write("Type: Image Search")
+        st.image(st.session_state.search_params["query_image"], caption="Query Image", width=200)
+    else:
+        st.write("Type: Text + Image Search")
+        st.write("Text:", st.session_state.search_params["text"])
+        st.image(st.session_state.search_params["query_image"], caption="Query Image", width=200)
+    
+    # Video selection interface
+    st.subheader("Select Videos to Process")
+    source_type = st.radio("Video Source", ["YouTube URL", "Local File", "Upload Video"])
+    
+    if source_type == "YouTube URL":
+        url = st.text_input("Enter a YouTube URL (e.g., https://www.youtube.com/watch?v=zTvJJnoWIPk)")
+        if url:
+            source = url
+            st.session_state.url = url
+        else:
+            source = None
+            
+    elif source_type == "Local File":
+        folder_path = st.text_input("Enter path to video folder or file")
+        source = None
+        if folder_path and os.path.exists(folder_path):
+            if os.path.isdir(folder_path):
+                # If it's a directory, list all video files
+                video_files = [f for f in os.listdir(folder_path) 
+                             if f.lower().endswith(('.mp4', '.avi', '.mov'))]
+                if len(video_files) > 0:
+                    # Always show processing mode for directories
+                    process_mode = st.radio("Processing Mode", ["Single Video", "All Videos"])
+                    st.write(f"Found {len(video_files)} videos in folder")
+                    
+                    if process_mode == "Single Video":
+                        selected_video = st.selectbox("Select video file", video_files)
+                        source = os.path.join(folder_path, selected_video)
+                    else:  # All Videos
+                        source = [os.path.join(folder_path, video) for video in video_files]
                 else:
-                    text_and_image_search(text_query, query_image, st.session_state.video_features, st.session_state.video_frames,
-                                        frame_indices=st.session_state.frame_indices, fps=st.session_state.fps)
+                    st.error("No video files found in the specified folder")
+            elif os.path.isfile(folder_path) and folder_path.lower().endswith(('.mp4', '.avi', '.mov')):
+                # If it's a direct file path
+                source = folder_path
+            else:
+                st.error("Please enter a valid video file path or folder containing videos")
+    
+    else:  # Upload Video
+        uploaded_file = st.file_uploader("Upload a video file", type=['mp4', 'avi', 'mov'])
+        if uploaded_file:
+            try:
+                # Save the uploaded file temporarily
+                temp_path = f"temp_video_{int(time.time())}.mp4"
+                with open(temp_path, "wb") as f:
+                    f.write(uploaded_file.getvalue())
+                source = temp_path
+                st.session_state.temp_path = temp_path  # Store temp_path in session state
+            except Exception as e:
+                st.error(f"Error saving uploaded file: {str(e)}")
+                source = None
+        else:
+            source = None
+    
+    # Store source in session state
+    if source:
+        st.session_state.source = source
+    
+    # Video processing button
+    if st.button("Process Videos"):
+        if not source:
+            st.error("Please select a video source first")
+        else:
+            if isinstance(source, list):
+                # Process videos one by one
+                total_videos = len(source)
+                progress_bar = st.progress(0)
+                
+                for idx, video_path in enumerate(source):
+                    video_name = os.path.basename(video_path)
+                    st.write(f"Processing video {idx + 1}/{total_videos}: {video_name}")
+                    
+                    try:
+                        with st.spinner(f'Processing {video_name}...'):
+                            # Process the video
+                            if os.path.isfile(video_path):
+                                # Extract frames
+                                status_text = st.empty()
+                                video_frames, fps, frame_indices = extract_frames(video_path, status_text, progress_bar)
+                                
+                                # Encode frames
+                                video_features = encode_frames(video_frames, status_text)
+                                
+                                # Perform search based on search_params
+                                if st.session_state.search_params["type"] == "text":
+                                    text_search(st.session_state.search_params["keywords"], video_features, video_frames,
+                                              video_name=video_name, frame_indices=frame_indices, fps=fps)
+                                elif st.session_state.search_params["type"] == "image":
+                                    image_search(st.session_state.search_params["query_image"], video_features, video_frames,
+                                               video_name=video_name, frame_indices=frame_indices, fps=fps)
+                                else:  # text_and_image
+                                    text_and_image_search(st.session_state.search_params["text"], 
+                                                        st.session_state.search_params["query_image"],
+                                                        video_features, video_frames,
+                                                        video_name=video_name, frame_indices=frame_indices, fps=fps)
+                                
+                                # Clear memory
+                                del video_frames
+                                del video_features
+                                torch.cuda.empty_cache()  # Clear GPU memory if using CUDA
+                                
+                                st.success(f"Finished processing {video_name}")
+                            else:
+                                st.error(f"Video file not found: {video_path}")
+                                
+                    except Exception as e:
+                        st.error(f"Error processing {video_name}: {str(e)}")
+                        continue  # Continue with next video even if this one fails
+                    
+                    # Update progress
+                    progress_bar.progress((idx + 1) / total_videos)
+                
+                st.success("Finished processing all videos!")
+                
+            else:  # Single video
+                try:
+                    with st.spinner('Processing video...'):
+                        # Process the single video
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        # Extract frames
+                        video_frames, fps, frame_indices = extract_frames(source, status_text, progress_bar)
+                        
+                        # Encode frames
+                        video_features = encode_frames(video_frames, status_text)
+                        
+                        # Perform search based on search_params
+                        if st.session_state.search_params["type"] == "text":
+                            text_search(st.session_state.search_params["keywords"], video_features, video_frames,
+                                      frame_indices=frame_indices, fps=fps)
+                        elif st.session_state.search_params["type"] == "image":
+                            image_search(st.session_state.search_params["query_image"], video_features, video_frames,
+                                       frame_indices=frame_indices, fps=fps)
+                        else:  # text_and_image
+                            text_and_image_search(st.session_state.search_params["text"],
+                                                st.session_state.search_params["query_image"],
+                                                video_features, video_frames,
+                                                frame_indices=frame_indices, fps=fps)
+                        
+                        st.success("Video processed successfully!")
+                        
+                except Exception as e:
+                    st.error(f"Error processing video: {str(e)}")
+                finally:
+                    # Clean up temp file if it exists
+                    if source_type == "Upload Video" and hasattr(st.session_state, 'temp_path'):
+                        try:
+                            if os.path.exists(st.session_state.temp_path):
+                                os.remove(st.session_state.temp_path)
+                        except Exception:
+                            pass  # Silently ignore cleanup errors
 
 st.markdown("---")
 st.markdown(
